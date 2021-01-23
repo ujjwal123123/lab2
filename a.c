@@ -54,18 +54,18 @@ int exec_single_command(char *command) {
     }
 
     // find file redirections
-    char *in = NULL;
-    char *out = NULL;
+    char *in_file_name = NULL;
+    char *out_file_name = NULL;
 
-    for (char *it = *args; it != NULL; it++) {
-        // if (strcmp(*it, ">") == 0) {
-        //     out = *it;
-        //     *it = '\0';
-        // }
-        // else if (strcmp(*it, "<") == 0) {
-        //     in = *it;
-        //     *it = '\0';
-        // }
+    for (char* itr = *args; *itr != '\0'; itr++) {
+        if (*itr == '>') {
+            *itr = '\0';
+            out_file_name = itr + 1;
+        }
+        else if (*itr == '<') {
+            *itr = '\0';
+            in_file_name = itr + 1;
+        }
     }
 
     int pid = fork();
@@ -80,8 +80,8 @@ int exec_single_command(char *command) {
         return 0;
     }
     else {
-        free(in);
-        free(out);
+        free(in_file_name);
+        free(out_file_name);
         free(args);
         int status;
         wait(&status);
