@@ -1,3 +1,5 @@
+#include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,9 +44,79 @@ int exec_internal_command(char **parsed_command) {
     return 1;
 }
 
+void strstrip(char *s) {
+    size_t size;
+    char *end;
+
+    size = strlen(s);
+
+    if (!size)
+        return;
+
+    end = s + size - 1;
+    while (end >= s && isspace(*end))
+        end--;
+    *(end + 1) = '\0';
+
+    while (*s && isspace(*s))
+        s++;
+}
+
+// Return 0 on success, -1 on failure
+int parse_file_redirection(int fd[], char *command) {
+    int in_fd = -1;
+    int out_fd = -1;
+
+    char *in_file_name = NULL;
+    char *out_file_name = NULL;
+
+    for (char *itr = command; *itr != '\0'; itr++) {
+        if (*itr == '>') {
+            *itr = '\0';
+            while (*(itr + 1) == ' ') {
+                itr++;
+            }
+            out_file_name = strtok(itr + 1, "<");
+            strstrip(out_file_name);
+        }
+        else if (*itr == '<') {
+            *itr = '\0';
+            while (*(itr + 1) == ' ') {
+                itr++;
+            }
+            in_file_name = itr + 1;
+            in_file_name = strtok(itr + 1, ">");
+            strstrip(in_file_name);
+        }
+    }
+
+    if (in_file_name) {
+        in_fd = open(in_file_name, O_RDONLY);
+        if (in_fd < 0) {
+            fprintf(stderr, "Cannot open file\n");
+            return -1;
+        }
+    }
+    if (out_file_name) {
+        out_fd = creat(out_file_name, 0644); // this is rw-r--r--
+        if (out_fd < 0) {
+            fprintf(stderr, "Cannot create file %d\n", __LINE__);
+            return -1;
+        }
+    }
+
+    fd[0] = in_fd;
+    fd[1] = out_fd;
+    return 0;
+}
+
 // Retuns 0 if a command was executed. The command must not contain a
 // pipe or a semi-colon.
 int exec_single_command(char *command) {
+    int fd[2]; // in, out
+
+    parse_file_redirection(fd, command);
+
     char **args = parse_command_with_spaces(command);
 
     if (exec_internal_command(args) == 0) {
@@ -53,35 +125,16 @@ int exec_single_command(char *command) {
         return 0;
     }
 
-    // find file redirections
-    char *in_file_name = NULL;
-    char *out_file_name = NULL;
-
-    for (char* itr = *args; *itr != '\0'; itr++) {
-        if (*itr == '>') {
-            *itr = '\0';
-            out_file_name = itr + 1;
-        }
-        else if (*itr == '<') {
-            *itr = '\0';
-            in_file_name = itr + 1;
-        }
-    }
-
     int pid = fork();
 
     if (pid == 0) {
-        fprintf(stderr, "Command: %s\n", args[0]);
         int status = execvp(args[0], args);
-        // exit(0);
         if (status == -1) {
             fprintf(stderr, "Error: Could not execute the command\n");
         }
         return 0;
     }
     else {
-        free(in_file_name);
-        free(out_file_name);
         free(args);
         int status;
         wait(&status);
