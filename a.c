@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ char **parse_command_with_spaces(char *command) {
 // Returns 0 if internal command was executed
 int exec_internal_command(char **parsed_command) {
     if (strcmp(parsed_command[0], "exit") == 0) {
-        printf("Exiting!!\n");
+        printf("Bye bye!!\n");
         exit(0);
     }
     else if (strcmp(parsed_command[0], "test") == 0) {
@@ -50,6 +51,41 @@ int exec_internal_command(char **parsed_command) {
             fprintf(stderr,
                     "Error: Directory could not be changed\n");
         }
+        return 0;
+    }
+    else if (strcmp(parsed_command[0], "source") == 0) {
+        char *script_file = parsed_command[1];
+
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            int script_fd = open(script_file, O_RDONLY);
+            if (script_fd < 0) {
+                fprintf(stderr, "Cannot open file\n");
+                return -1;
+            }
+            dup2(script_fd, STDIN_FILENO);
+            int status = execl("./a", "a", "-noprompt", NULL);
+            if (status == -1) {
+                fprintf(stderr,
+                        "Error: Could not execute the command");
+            }
+
+            return 0;
+        }
+        else {
+            int status = 0;
+            wait(&status);
+            return WEXITSTATUS(status);
+        }
+
+        return 0;
+    }
+    else if (strcmp(parsed_command[0], "echo") == 0) {
+        for (char **itr = parsed_command + 1; *itr != NULL; itr++) {
+            printf("%s ", *itr);
+        }
+        printf("\n");
         return 0;
     }
 
@@ -141,7 +177,7 @@ int exec_single_command(char *command) {
         return 0;
     }
 
-    int pid = fork();
+    pid_t pid = fork();
 
     if (pid == 0) {
         if (fd[0] != -1) {
@@ -170,14 +206,14 @@ int exec_single_command(char *command) {
 // Returns 0 if a command was executed. The command may contain a
 // pipe. The command must not contain a semi-colon.
 int exec_command_with_pipe(char *command) {
-    char **parsed_commands = (char **)malloc(sizeof(char *) * 100);
+    char **parsed_pipes = (char **)malloc(sizeof(char *) * 100);
     char *save_ptr;
-    parsed_commands[0] =
+    parsed_pipes[0] =
         strtok_r(command, "|", &save_ptr); // without pipes
     int len = 0;
-    while (parsed_commands[len] != NULL) {
+    while (parsed_pipes[len] != NULL) {
         // exec_single_command(parsed_commands_without_pipe[i]);
-        parsed_commands[++len] = strtok_r(NULL, "|", &save_ptr);
+        parsed_pipes[++len] = strtok_r(NULL, "|", &save_ptr);
     }
 
     // int fd[2];
@@ -193,14 +229,14 @@ int exec_command_with_pipe(char *command) {
         //     dup2(fd[STDOUT_FILENO], STDOUT_FILENO);
         // }
 
-        exec_single_command(parsed_commands[j]);
+        exec_single_command(parsed_pipes[j]);
 
         // if (j != len - 1) {
         //     close(fd[STDOUT_FILENO]);
         // }
     }
 
-    free(parsed_commands);
+    free(parsed_pipes);
     return 0;
 }
 
@@ -226,7 +262,12 @@ int exec_multi_command(char *multi_command) {
 
 void get_commands() {}
 
-int main() {
+int main(int argc, char **argv) {
+    bool prompt = true;
+    if (argc >= 2 && strcmp(argv[1], "-noprompt") == 0) {
+        prompt = false;
+    }
+
     char *current_dir_buf = (char *)malloc(sizeof(char) * 200);
 
     char *command = (char *)malloc(sizeof(char) * 500);
@@ -236,7 +277,9 @@ int main() {
               NULL);
 
     while (1) {
-        printf(COLOR "%s $ " RESET, getcwd(current_dir_buf, 200));
+        if (prompt) {
+            printf(COLOR "%s $ " RESET, getcwd(current_dir_buf, 200));
+        }
         int status = scanf(" %[^\n]s", command);
 
         if (status == EOF) {
