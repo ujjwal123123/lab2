@@ -37,15 +37,17 @@ char **parse_command_with_spaces(char *command) {
 
 // Returns 0 if internal command was executed
 int exec_internal_command(char **parsed_command) {
-    if (strcmp(parsed_command[0], "exit") == 0) {
+    char *command_name = parsed_command[0];
+
+    if (strcmp(command_name, "exit") == 0) {
         printf("Bye bye!!\n");
         exit(0);
     }
-    else if (strcmp(parsed_command[0], "test") == 0) {
+    else if (strcmp(command_name, "test") == 0) {
         ;
         return 0;
     }
-    else if (strcmp(parsed_command[0], "cd") == 0) {
+    else if (strcmp(command_name, "cd") == 0) {
         int status = chdir(parsed_command[1]);
         if (status == -1) {
             fprintf(stderr,
@@ -53,7 +55,7 @@ int exec_internal_command(char **parsed_command) {
         }
         return 0;
     }
-    else if (strcmp(parsed_command[0], "source") == 0) {
+    else if (strcmp(command_name, "source") == 0) {
         char *script_file = parsed_command[1];
 
         pid_t pid = fork();
@@ -81,7 +83,7 @@ int exec_internal_command(char **parsed_command) {
 
         return 0;
     }
-    else if (strcmp(parsed_command[0], "echo") == 0) {
+    else if (strcmp(command_name, "echo") == 0) {
         for (char **itr = parsed_command + 1; *itr != NULL; itr++) {
             printf("%s ", *itr);
         }
@@ -159,12 +161,10 @@ int parse_file_redirection(int fd[], char *command) {
 
 // Retuns 0 if a command was executed. The command must not
 // contain a pipe or a semi-colon.
-int exec_single_command(char *command) {
-    // TODO: output in a file is not correct
+int exec_single_command(char *command, int pipe_fd[2]) {
+    int redirection_fd[2]; // in, out
 
-    int fd[2]; // in, out
-
-    if (parse_file_redirection(fd, command) != 0) {
+    if (parse_file_redirection(redirection_fd, command) != 0) {
         fprintf(stderr, "Error: Could not parse file redirections\n");
         return -1;
     };
@@ -180,13 +180,20 @@ int exec_single_command(char *command) {
     pid_t pid = fork();
 
     if (pid == 0) {
-        if (fd[0] != -1) {
-            dup2(fd[0], STDIN_FILENO);
-            fsync(fd[0]);
+        // setpgid(0, 0);
+        // printf("Executing process %d in background\n", getpid());
+
+        if (redirection_fd[0] != -1) {
+            dup2(redirection_fd[0], STDIN_FILENO);
         }
-        if (fd[1] != -1) {
-            dup2(fd[1], STDOUT_FILENO);
-            fsync(fd[1]);
+        else if (pipe_fd[0] != -1) {
+            dup2(pipe_fd[0], STDIN_FILENO);
+        }
+        if (redirection_fd[1] != -1) {
+            dup2(redirection_fd[1], STDOUT_FILENO);
+        }
+        else if (pipe_fd[1] != -1) {
+            dup2(pipe_fd[1], STDOUT_FILENO);
         }
 
         int status = execvp(args[0], args);
@@ -216,24 +223,27 @@ int exec_command_with_pipe(char *command) {
         parsed_pipes[++len] = strtok_r(NULL, "|", &save_ptr);
     }
 
-    // int fd[2];
+    int pipe_fd[2] = {-1, -1}; // in, out
     for (int j = 0; j < len; j++) {
-        // if (j != 0) {
-        //     dup2(fd[STDIN_FILENO], STDIN_FILENO);
-        // }
-        // if (j != len - 1) {
-        //     if (pipe(fd) == -1) {
-        //         fprintf(stderr, "Pipe could not be created\n");
-        //         exit(1);
-        //     };
-        //     dup2(fd[STDOUT_FILENO], STDOUT_FILENO);
-        // }
+        int in_fd = -1;
+        int out_fd = -1;
+        if (j != 0) {
+            in_fd = pipe_fd[0];
+        }
+        if (j != len - 1) {
+            if (pipe(pipe_fd) == -1) { // create a pipe
+                fprintf(stderr, "Pipe could not be created\n");
+                exit(1);
+            };
+            out_fd = pipe_fd[1];
+        }
 
-        exec_single_command(parsed_pipes[j]);
+        int pipe_temp[2] = {in_fd, out_fd};
+        exec_single_command(parsed_pipes[j], pipe_temp);
 
-        // if (j != len - 1) {
-        //     close(fd[STDOUT_FILENO]);
-        // }
+        if (j != len - 1) {
+            close(pipe_fd[STDOUT_FILENO]);
+        }
     }
 
     free(parsed_pipes);
@@ -260,7 +270,27 @@ int exec_multi_command(char *multi_command) {
     return 0;
 }
 
-void get_commands() {}
+bool is_background(char *command) {
+    char *end;
+    size_t size = strlen(command);
+
+    if (!size) {
+        return false;
+    }
+
+    bool amp_found = false; // ampersand found
+
+    end = command + size - 1;
+    while (end >= command && !isalnum(*end) && *end != '&') {
+        end--;
+    }
+    if (*end == '&') {
+        *end = '\0';
+        amp_found = true;
+    }
+
+    return amp_found;
+}
 
 int main(int argc, char **argv) {
     bool prompt = true;
@@ -281,6 +311,8 @@ int main(int argc, char **argv) {
             printf(COLOR "%s $ " RESET, getcwd(current_dir_buf, 200));
         }
         int status = scanf(" %[^\n]s", command);
+
+        bool background = is_background(command);
 
         if (status == EOF) {
             if (errno == EINTR) {
