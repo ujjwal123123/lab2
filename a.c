@@ -12,8 +12,11 @@
 
 #define COLOR "\x1B[31m"
 #define RESET "\x1B[0m"
+#define READ 0  // read (in) end of pipe
+#define WRITE 1 // write (out) end of pipe
 
 jmp_buf sigterm_buffer;
+int devNull;
 
 // do not do anything on ctrl-c
 void sigint_handler() {
@@ -50,8 +53,7 @@ int exec_internal_command(char **parsed_command) {
     else if (strcmp(command_name, "cd") == 0) {
         int status = chdir(parsed_command[1]);
         if (status == -1) {
-            fprintf(stderr,
-                    "Error: Directory could not be changed\n");
+            fprintf(stderr, "Error: Directory could not be changed\n");
         }
         return 0;
     }
@@ -69,8 +71,7 @@ int exec_internal_command(char **parsed_command) {
             dup2(script_fd, STDIN_FILENO);
             int status = execl("./a", "a", "-noprompt", NULL);
             if (status == -1) {
-                fprintf(stderr,
-                        "Error: Could not execute the command");
+                fprintf(stderr, "Error: Could not execute the command");
             }
 
             return 0;
@@ -154,14 +155,14 @@ int parse_file_redirection(int fd[], char *command) {
         }
     }
 
-    fd[0] = in_fd;
-    fd[1] = out_fd;
+    fd[READ] = in_fd;
+    fd[WRITE] = out_fd;
     return 0;
 }
 
-// Retuns 0 if a command was executed. The command must not
-// contain a pipe or a semi-colon.
-int exec_single_command(char *command, int pipe_fd[2]) {
+// Retuns 0 if a command was executed. The command must not contain a pipe or
+// a semi-colon.
+int exec_single_command(char *command, int pipe_fd[2], bool background) {
     int redirection_fd[2]; // in, out
 
     if (parse_file_redirection(redirection_fd, command) != 0) {
@@ -180,20 +181,17 @@ int exec_single_command(char *command, int pipe_fd[2]) {
     pid_t pid = fork();
 
     if (pid == 0) {
-        // setpgid(0, 0);
-        // printf("Executing process %d in background\n", getpid());
-
-        if (redirection_fd[0] != -1) {
-            dup2(redirection_fd[0], STDIN_FILENO);
+        if (redirection_fd[READ] != -1) {
+            dup2(redirection_fd[READ], STDIN_FILENO);
         }
-        else if (pipe_fd[0] != -1) {
-            dup2(pipe_fd[0], STDIN_FILENO);
+        else if (pipe_fd[READ] != -1) {
+            dup2(pipe_fd[READ], STDIN_FILENO);
         }
-        if (redirection_fd[1] != -1) {
-            dup2(redirection_fd[1], STDOUT_FILENO);
+        if (redirection_fd[WRITE] != -1) {
+            dup2(redirection_fd[WRITE], STDOUT_FILENO);
         }
-        else if (pipe_fd[1] != -1) {
-            dup2(pipe_fd[1], STDOUT_FILENO);
+        else if (pipe_fd[WRITE] != -1) {
+            dup2(pipe_fd[WRITE], STDOUT_FILENO);
         }
 
         int status = execvp(args[0], args);
@@ -204,19 +202,23 @@ int exec_single_command(char *command, int pipe_fd[2]) {
     }
     else {
         int status = 0;
-        wait(&status);
+        if (!background) {
+            wait(&status);
+        }
+        else {
+            printf("Sending the process to background\n");
+        }
         free(args);
         return WEXITSTATUS(status);
     }
 }
 
-// Returns 0 if a command was executed. The command may contain a
-// pipe. The command must not contain a semi-colon.
-int exec_command_with_pipe(char *command) {
+// Returns 0 if a command was executed. The command may contain a pipe. The
+// command must not contain a semi-colon.
+int exec_command_with_pipe(char *command, bool background) {
     char **parsed_pipes = (char **)malloc(sizeof(char *) * 100);
     char *save_ptr;
-    parsed_pipes[0] =
-        strtok_r(command, "|", &save_ptr); // without pipes
+    parsed_pipes[0] = strtok_r(command, "|", &save_ptr); // without pipes
     int len = 0;
     while (parsed_pipes[len] != NULL) {
         // exec_single_command(parsed_commands_without_pipe[i]);
@@ -228,18 +230,21 @@ int exec_command_with_pipe(char *command) {
         int in_fd = -1;
         int out_fd = -1;
         if (j != 0) {
-            in_fd = pipe_fd[0];
+            in_fd = pipe_fd[READ];
         }
         if (j != len - 1) {
             if (pipe(pipe_fd) == -1) { // create a pipe
                 fprintf(stderr, "Pipe could not be created\n");
                 exit(1);
             };
-            out_fd = pipe_fd[1];
+            out_fd = pipe_fd[WRITE];
+        }
+        else if (background) {
+            out_fd = devNull;
         }
 
         int pipe_temp[2] = {in_fd, out_fd};
-        exec_single_command(parsed_pipes[j], pipe_temp);
+        exec_single_command(parsed_pipes[j], pipe_temp, background);
 
         if (j != len - 1) {
             close(pipe_fd[STDOUT_FILENO]);
@@ -250,9 +255,9 @@ int exec_command_with_pipe(char *command) {
     return 0;
 }
 
-// Execute a command which may consist of a number of commands
-// separated by `;`q
-int exec_multi_command(char *multi_command) {
+// Execute a command which may consist of a number of commands separated by
+// `;`q
+int exec_multi_command(char *multi_command, bool background) {
     char **parsed_commands_without_semicolon =
         (char **)malloc(sizeof(char *) * 200);
 
@@ -261,7 +266,8 @@ int exec_multi_command(char *multi_command) {
         strtok_r(multi_command, ";", &save_ptr);
     int i = 0;
     while (parsed_commands_without_semicolon[i] != NULL) {
-        exec_command_with_pipe(parsed_commands_without_semicolon[i]);
+        exec_command_with_pipe(parsed_commands_without_semicolon[i],
+                               background);
         parsed_commands_without_semicolon[++i] =
             strtok_r(NULL, ";", &save_ptr);
     }
@@ -298,12 +304,13 @@ int main(int argc, char **argv) {
         prompt = false;
     }
 
+    devNull = open("/dev/null", O_WRONLY);
+
     char *current_dir_buf = (char *)malloc(sizeof(char) * 200);
 
     char *command = (char *)malloc(sizeof(char) * 500);
 
-    sigaction(SIGINT,
-              &(struct sigaction){.sa_handler = sigint_handler},
+    sigaction(SIGINT, &(struct sigaction){.sa_handler = sigint_handler},
               NULL);
 
     while (1) {
@@ -319,9 +326,9 @@ int main(int argc, char **argv) {
                 continue; // read operation interrupted by signal
             }
             // handle Ctrl-D
-            exec_multi_command("exit");
+            exec_multi_command("exit", false);
         }
-        else if (exec_multi_command(command) == 0) {
+        else if (exec_multi_command(command, background) == 0) {
             ;
         }
     }
