@@ -12,14 +12,14 @@ A command shell implemented in plain C using Linux system calls.
 
 ## Instructions
 
-Build the project using:
+Clone the repository and build the project using:
 
-```
+```bash
 gcc a.c -Wall -Wextra -o shell
 ```
 
 Then run the shell with this command:
-```
+```bash
 ./shell
 ```
 
